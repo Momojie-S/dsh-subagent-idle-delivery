@@ -4,7 +4,7 @@
 
 ## 环境要求
 
-- DSH `>= 0.1.0-rc.7`（已验证至 `0.1.5-rc.1`；依赖 `agent/inbox/spliced` 事件、`Agent.inbox.remove()`、`Agent.whenIdle()/followup()/inject()`）
+- DSH `>= 0.1.0-rc.7`（已验证至 `0.2.0-rc.2`；依赖 `agent/inbox/spliced` 事件、`Agent.inbox.remove()`、`Agent.whenIdle()/followup()/inject()`）
 - 会用后台 continuable 子 agent 的部署（内置 `subagent` 的 `backgroundMode: continuable`、`schedspawn` 等都受益）
 - `0.1.2-rc.1` 起子 agent 的对话回复改走 `send_message`（`agent-message` kind），取代了旧的 report 工具——本插件 `>= 0.1.1` 默认拦截该类型
 
