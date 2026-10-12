@@ -2,7 +2,9 @@
 
 ## 目标
 
-后台 continuable 子 agent 的结算通知（`subagent-settled`）与主动汇报（`subagent-report`）在父会话忙碌时**不打断当前工作**：扣留到父会话完全空闲，再作为新回合投递。
+后台 continuable 子 agent 的结算通知（`subagent-settled`）与对话回复在父会话忙碌时**不打断当前工作**：扣留到父会话完全空闲，再作为新回合投递。
+
+回复载体随 DSH 版本变化：rc.2 时代是 report 工具的 `subagent-report`；`0.1.2-rc.1` steer 语义统一（#3250）删除 report 工具后，回复改由 `send_message` 发出、服务端派生 kind 为 `agent-message`——默认 `heldKinds` 三者全含，跨版本都拦得住。
 
 ## 非目标
 

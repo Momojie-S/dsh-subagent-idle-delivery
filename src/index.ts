@@ -1,7 +1,8 @@
 /**
  * Subagent idle delivery (hold-and-release): while a parent agent is busy,
- * continuable-subagent settlement notices (`subagent-settled`) and explicit
- * reports (`subagent-report`) are removed from the parent's inbox and held
+ * continuable-subagent settlement notices (`subagent-settled`) and a child's
+ * reply messages (`subagent-report` on legacy DSH, `agent-message` since the
+ * 0.1.2-rc.1 steer unification) are removed from the parent's inbox and held
  * in memory; when the parent becomes fully idle (or the release valve
  * deadline passes), they are re-delivered with `followup()` so each lands
  * as a fresh turn after — never inside — the work in flight.
@@ -41,10 +42,23 @@ export const inject = ['agents', 'timer']
 /** Config: which message kinds to hold, and the busy-hold release valve. */
 export interface Config {
   /**
-   * `UserMessage.source.kind` values held while the parent is busy (default
-   * `['subagent-settled', 'subagent-report']`). Extending this list catches
-   * every matching source kind — `plugin`, for instance, includes approval
-   * and job-completion notices; only add kinds you fully understand.
+   * `UserMessage.source.kind` values held while the parent is busy. The
+   * default (since 0.1.1) is `['subagent-settled', 'subagent-report',
+   * 'agent-message']`:
+   *
+   * - `subagent-settled` — continuable-subagent settlement notice (core).
+   * - `subagent-report` — legacy report-tool message; no longer produced by
+   *   DSH ≥ 0.1.2-rc.1 (the tool-subagent-report package was removed by the
+   *   steer-unification rework) but kept so an older deployment still works.
+   * - `agent-message` — a child's `send_message` reply (`{kind:
+   *   'agent-message', form: 'relay'}`, derived server-side). Since the
+   *   steer unification this kind REPLACED `subagent-report` as the carrier
+   *   of a child's reply text, so holding it is what keeps replies from
+   *   steering into a running turn.
+   *
+   * Extending this list catches every matching source kind — `plugin`, for
+   * instance, includes approval and job-completion notices; only add kinds
+   * you fully understand.
    */
   heldKinds?: string[]
   /**
@@ -58,7 +72,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  heldKinds: z.array(z.string()).default(['subagent-settled', 'subagent-report']),
+  heldKinds: z.array(z.string()).default(['subagent-settled', 'subagent-report', 'agent-message']),
   maxHoldMs: z.number().min(0).default(600_000),
 })
 
@@ -74,7 +88,7 @@ interface HeldEntry {
 }
 
 export function apply(ctx: Context, config: Config): void {
-  const heldKinds = new Set(config.heldKinds ?? ['subagent-settled', 'subagent-report'])
+  const heldKinds = new Set(config.heldKinds ?? ['subagent-settled', 'subagent-report', 'agent-message'])
   const maxHoldMs = config.maxHoldMs ?? 600_000
   const held = new Map<SessionId, HeldEntry>()
 

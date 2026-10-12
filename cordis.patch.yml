@@ -1,6 +1,7 @@
 # @momojie-s/dsh-subagent-idle-delivery 组合包 patch 层：被 profile bundles 列表引用时应用。
 # 行 name 用包名（非 file:// URL），由 Node 模块解析到已安装的包。
-# 默认拦 subagent-settled / subagent-report 两类消息；放水阀默认 10 分钟。
+# 拦三类消息：subagent-settled（结算通知）/ subagent-report（旧版 report 工具，rc.1 起不再产生，保留兼容）
+# / agent-message（rc.1 steer 统一后 send_message 回复的载体，取代了 subagent-report）；放水阀默认 10 分钟。
 - insert:
     - id: subagent-idle-delivery
       name: '@momojie-s/dsh-subagent-idle-delivery'
@@ -8,4 +9,5 @@
         heldKinds:
           - subagent-settled
           - subagent-report
+          - agent-message
         maxHoldMs: 600000
