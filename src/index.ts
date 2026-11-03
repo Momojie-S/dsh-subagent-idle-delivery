@@ -71,10 +71,15 @@ export interface Config {
   maxHoldMs?: number
 }
 
+// `z<Config>` annotation keeps the emitted declaration portable (without it
+// tsc TS2742 cannot name the inferred type through pnpm's virtual store).
+// The `as unknown as` cast absorbs a false positive: schemastery ≥ 3.18.2
+// widens `SchemaOutput` of non-primitive schemas to `T | Volatile<T>`, which
+// makes `meta.default` legitimately wider than this interface.
 export const Config: z<Config> = z.object({
   heldKinds: z.array(z.string()).default(['subagent-settled', 'subagent-report', 'agent-message']),
   maxHoldMs: z.number().min(0).default(600_000),
-})
+}) as unknown as z<Config>
 
 /** One parent's held batch, process-local by design. */
 interface HeldEntry {
