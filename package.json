@@ -1,6 +1,6 @@
 {
   "name": "@momojie-s/dsh-subagent-idle-delivery",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "DSH 插件: 子 agent 完成通知/汇报在父会话忙碌时先扣留，等父会话完全空闲后作为新回合投递（hold-and-release）",
   "type": "module",
   "main": "lib/index.js",

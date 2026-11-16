@@ -4,7 +4,7 @@
 
 ## 环境要求
 
-- DSH `>= 0.1.0-rc.7`（已验证至 `0.2.2-rc.1`；依赖 `agent/inbox/spliced` 事件、`Agent.inbox.remove()`、`Agent.whenIdle()/followup()/inject()`）
+- DSH `>= 0.1.0-rc.7`（已验证至 `0.2.2-rc.2`；依赖 `agent/inbox/spliced` 事件、`Agent.inbox.remove()`、`Agent.whenIdle()/followup()/inject()`；wait_agent 旁路自 0.2.0 起生效，读 `tool/call`/`tool/result`/`turn/end` 会话事件记账）
 - 会用后台 continuable 子 agent 的部署（内置 `subagent` 的 `backgroundMode: continuable`、`schedspawn` 等都受益）
 - `0.1.2-rc.1` 起子 agent 的对话回复改走 `send_message`（`agent-message` kind），取代了旧的 report 工具——本插件 `>= 0.1.1` 默认拦截该类型
 
@@ -16,6 +16,7 @@
 |---|---|
 | 父会话空闲时 | 原生行为（立即开新回合处理）——不拦截 |
 | 父会话忙碌时（模型输出/工具执行中） | **扣留**：消息从收件箱取出暂存，不再混进下一步输入，界面也不再闪排队预览；当前回合正常收尾后，暂存消息作为新回合投递 |
+| 父会话正在执行 `wait_agent` 调用时 | **旁路**：模型明确在等输入，不扣留——走原生投递，`wait_agent` 返回 `timedOut:false`、同轮下一步见到正文；若消息在等待开始前已被扣留，开账瞬间自动回注 |
 | 扣留超过放水阀时限仍未空闲 | 以"排队到当前回合之后"的方式释放（不穿插进进行中的回合，只排在它后面） |
 
 拦截的消息类型默认三类：`subagent-settled`（后台子 agent 结算通知）、`subagent-report`（旧版 report 工具汇报，DSH `>= 0.1.2-rc.1` 已删除该工具、此类消息不再产生，保留以兼容旧部署）与 `agent-message`（子 agent `send_message` 回复，rc.1 steer 统一后取代 `subagent-report` 成为回复载体）。用户消息、审批通知等一律不碰。

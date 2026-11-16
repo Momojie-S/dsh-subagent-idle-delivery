@@ -16,6 +16,16 @@
  * event seam. The turn that would have been extended closes normally, so
  * the extra steering step disappears too.
  *
+ * `wait_agent` bypass (0.2.0): when the parent itself is executing a
+ * `wait_agent` call it has explicitly asked for input, so holding would
+ * defeat the tool (its `timedOut:false` receipt promises input that the
+ * hold would then swallow until idle). A per-session account of executing
+ * `wait_agent` calls (src/waits.ts, fed from session events) makes the
+ * hold decision pass such messages through natively; when a wait opens
+ * while a batch is already held, the batch is re-injected into next-step
+ * so the wait's subscribe-then-poll inbox check still sees it. See
+ * docs/design/decisions/0003-wait-agent-bypass.md.
+ *
  * Loss semantics match the native notice (best effort, in-memory only): a
  * DSH restart or plugin stop releases held messages best-effort, and a
  * parent that died while holding drops them — the child session log
@@ -32,6 +42,8 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { selectNotices } from './select.js'
+import { applyWaitEvent, isWaitActive } from './waits.js'
+import type { WaitAccount } from './waits.js'
 
 export const name = 'dsh-subagent-idle-delivery'
 // `agents` resolves the splice's session to its live Agent; `timer` powers
@@ -96,13 +108,11 @@ export function apply(ctx: Context, config: Config): void {
   const heldKinds = new Set(config.heldKinds ?? ['subagent-settled', 'subagent-report', 'agent-message'])
   const maxHoldMs = config.maxHoldMs ?? 600_000
   const held = new Map<SessionId, HeldEntry>()
+  /** Per-session `wait_agent` calls currently executing (see src/waits.ts). */
+  const waits: WaitAccount = new Map()
 
-  /**
-   * Re-deliver one held batch as fresh turns. `followup()` on an idle agent
-   * opens a turn; on a busy one it queues behind the CURRENT turn (valve
-   * path) — either way the notice never steers into a running step.
-   */
-  const release = (sessionId: SessionId, entry: HeldEntry, reason: 'idle' | 'valve' | 'teardown'): void => {
+  /** Drop one entry from the held map and disarm its valve, if still current. */
+  const discardHeld = (sessionId: SessionId, entry: HeldEntry): void => {
     if (held.get(sessionId) !== entry) return
     held.delete(sessionId)
     if (entry.valve !== undefined) {
@@ -111,6 +121,16 @@ export function apply(ctx: Context, config: Config): void {
       } catch { /* a disposed timer disposer is a no-op */ }
       entry.valve = undefined
     }
+  }
+
+  /**
+   * Re-deliver one held batch as fresh turns. `followup()` on an idle agent
+   * opens a turn; on a busy one it queues behind the CURRENT turn (valve
+   * path) — either way the notice never steers into a running step.
+   */
+  const release = (sessionId: SessionId, entry: HeldEntry, reason: 'idle' | 'valve' | 'teardown'): void => {
+    if (held.get(sessionId) !== entry) return
+    discardHeld(sessionId, entry)
     const live = ctx.agents.get(sessionId)
     if (live === undefined || live !== entry.agent) {
       ctx.logger.warn(
@@ -169,9 +189,68 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
 
+  /**
+   * Re-inject one session's held batch into `next-step` ahead of a just
+   * opened `wait_agent` call. Runs as a MICROTASK: the opening event is
+   * observed synchronously inside `session.append()`'s dispatch, where a
+   * nested `inject()` would trip the append-reentry guard and throw —
+   * deferring lets the append commit first. Ordering safety does not depend
+   * on winning any race: `wait_agent` subscribes to `agent/inbox/inserted`
+   * before its first `nextStep` poll, so the re-injected splice resolves
+   * the wait whichever side runs first. Per-message transactional: each
+   * successfully injected message leaves the batch, a failure stops with
+   * the remainder still held (idle/valve release as before).
+   */
+  const scheduleReinject = (sessionId: SessionId): void => {
+    void Promise.resolve().then(() => {
+      try {
+        const entry = held.get(sessionId)
+        if (entry === undefined || entry.messages.length === 0) return
+        const agent = ctx.agents.get(sessionId)
+        if (agent === undefined || agent !== entry.agent) return
+        let reinjected = 0
+        while (entry.messages.length > 0) {
+          const message = entry.messages[0]
+          try {
+            agent.inject(message)
+          } catch (error) {
+            ctx.logger.warn(
+              `dsh-subagent-idle-delivery: reinject stopped for "${String(sessionId)}" after ${reinjected} `
+              + `of ${reinjected + entry.messages.length} notice(s); remainder stays held: ${String(error)}`,
+            )
+            return
+          }
+          entry.messages.shift()
+          reinjected += 1
+        }
+        // Fully delivered: drop the entry. The armed whenIdle() watcher and
+        // any valve timer become no-ops through the identity check.
+        discardHeld(sessionId, entry)
+        ctx.logger.info(
+          `dsh-subagent-idle-delivery: reinjected ${reinjected} notice(s) to "${String(sessionId)}" ahead of wait_agent`,
+        )
+      } catch {
+        // Absolute backstop: a plugin error must never reach the host.
+      }
+    }).catch(() => {
+      // Same backstop on the microtask chain itself.
+    })
+  }
+
   ctx.on('session/event', (session, event) => {
     try {
-      if (event.type !== 'agent/inbox/spliced') return
+      // Wait-account bookkeeping runs for every event, before any early
+      // return: openings, settlements, and the turn/end catch-all must stay
+      // current even when the event is not an inbox splice. The widened
+      // `string` view covers PTC dispatch events, which join the map only
+      // where @deepseek-ai/dsh-tool-executor-ptc is loaded.
+      const type: string = event.type
+      applyWaitEvent(waits, session.id, type, event.data)
+      if (type === 'tool/call' || type === 'tool/ptc-dispatch-start') {
+        const data = event.data as { name?: unknown }
+        if (data.name === 'wait_agent' && held.has(session.id)) scheduleReinject(session.id)
+      }
+      if (type !== 'agent/inbox/spliced') return
       const data = event.data as { target?: string; inserted?: readonly UserMessage[] }
       // Both targets are intercepted: the busy settlement path steers into
       // `next-step`, and a wakeup report against a busy parent lands in
@@ -187,6 +266,16 @@ export function apply(ctx: Context, config: Config): void {
       // An idle parent already receives these as a fresh turn natively;
       // maintenance windows also report idle and latch their own wake.
       if (agent.status === 'idle') return
+      // A parent executing a wait_agent call has explicitly asked for input:
+      // the tool's `timedOut:false` receipt promises it, and holding would
+      // swallow the very payload the model is waiting for until idle. Pass
+      // through natively — the step-boundary claim delivers it in-turn.
+      if (isWaitActive(waits, session.id)) {
+        ctx.logger.info(
+          `dsh-subagent-idle-delivery: wait_agent active, native delivery for ${notices.length} notice(s) to "${String(session.id)}"`,
+        )
+        return
+      }
       // The durable splice commits BEFORE the live inbox projection mutates
       // (inbox.ts mutate()), so inbox.remove() cannot see these messages
       // inside this synchronous listener. Defer exactly one microtask: any
@@ -232,6 +321,6 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   ctx.logger.info(
-    `dsh-subagent-idle-delivery: active (kinds [${[...heldKinds].join(', ')}], valve ${maxHoldMs > 0 ? `${maxHoldMs}ms` : 'off'})`,
+    `dsh-subagent-idle-delivery: active (kinds [${[...heldKinds].join(', ')}], valve ${maxHoldMs > 0 ? `${maxHoldMs}ms` : 'off'}, wait_agent bypass on)`,
   )
 }
